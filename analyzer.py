@@ -37,20 +37,39 @@ def get_client(api_key: str | None = None) -> genai.Client:
     return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=TIMEOUT_MS))
 
 
+class QuotaExhausted(RuntimeError):
+    pass
+
+
 def _generate(client, **kwargs):
-    """generate_content with short retries, then backup models, when the model is busy."""
-    transient = ("503", "429", "500", "504", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "DEADLINE", "timed out", "Timeout")
+    """generate_content with short retries, then backup models.
+    - 503/500/timeouts: model is busy -> retry briefly, then try the next model
+    - 429 per-day quota: retrying is pointless (and wastes quota) -> go straight to the next model
+    """
+    busy = ("503", "500", "504", "UNAVAILABLE", "DEADLINE", "timed out", "timeout")
     last = None
+    daily_hit = False
     for model in [MODEL] + FALLBACKS:
         for attempt in range(2):
             try:
                 return client.models.generate_content(model=model, **kwargs)
             except Exception as e:
-                if any(t.lower() in str(e).lower() for t in transient):
+                msg = str(e)
+                low = msg.lower()
+                if "429" in msg or "resource_exhausted" in low:
+                    last = e
+                    daily_hit = daily_hit or "perday" in low or "per day" in low
+                    break  # no point retrying the same model; try the next one
+                if any(t.lower() in low for t in busy):
                     last = e
                     time.sleep(1.5)
                     continue
                 raise
+    if daily_hit:
+        raise QuotaExhausted(
+            "โควตารายวันของ API (แพลนฟรี) หมดแล้ว รีเซ็ตทุกวัน — "
+            "ลองใหม่พรุ่งนี้, ตั้งโมเดลสำรอง (GEMINI_FALLBACK_MODELS) "
+            "หรือใช้ API Key อื่น")
     raise last
 
 
