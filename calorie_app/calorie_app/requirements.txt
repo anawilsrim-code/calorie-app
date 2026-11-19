@@ -1,4 +1,0 @@
-streamlit>=1.40
-google-genai>=1.0
-pandas
-pillow
