@@ -18,9 +18,9 @@ from PIL import Image
 from google import genai
 from google.genai import types
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")  # change if this model is retired
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")  # change if this model is retired
 # optional backup models tried when the main one is busy, e.g. "model-a,model-b"
-FALLBACKS = [m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.1-flash-lite").split(",") if m.strip()]
+FALLBACKS = [m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3-flash-preview,gemini-2.5-flash-lite").split(",") if m.strip()]
 TIMEOUT_MS = 45000  # give up on a single request after 45 s
 DB_PATH = Path(__file__).parent / "nutrition_db.csv"
 PORTION_LABELS = {"เล็ก": 0.75, "กลาง": 1.0, "ใหญ่": 1.3}
@@ -49,6 +49,7 @@ def _generate(client, **kwargs):
     busy = ("503", "500", "504", "UNAVAILABLE", "DEADLINE", "timed out", "timeout")
     last = None
     daily_hit = False
+    denied = False
     for model in [MODEL] + FALLBACKS:
         for attempt in range(2):
             try:
@@ -60,6 +61,10 @@ def _generate(client, **kwargs):
                     last = e
                     daily_hit = daily_hit or "perday" in low or "per day" in low
                     break  # no point retrying the same model; try the next one
+                if "403" in msg or "permission_denied" in low or "404" in msg or "not_found" in low:
+                    last = e
+                    denied = True
+                    break  # this model is not usable on this project/plan; try the next one
                 if any(t.lower() in low for t in busy):
                     last = e
                     time.sleep(1.5)
@@ -70,6 +75,11 @@ def _generate(client, **kwargs):
             "โควตารายวันของ API (แพลนฟรี) หมดแล้ว รีเซ็ตทุกวัน — "
             "ลองใหม่พรุ่งนี้, ตั้งโมเดลสำรอง (GEMINI_FALLBACK_MODELS) "
             "หรือใช้ API Key อื่น")
+    if denied:
+        raise RuntimeError(
+            "โมเดลที่ตั้งไว้ใช้ไม่ได้กับโปรเจคนี้ในแพลนฟรี — ดูหน้า Rate Limit ใน AI Studio "
+            "ว่าโมเดลไหนมีโควตาฟรี แล้วตั้ง GEMINI_MODEL / GEMINI_FALLBACK_MODELS ให้ตรง. "
+            "รายละเอียด: " + str(last))
     raise last
 
 
